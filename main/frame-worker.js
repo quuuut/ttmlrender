@@ -254,7 +254,7 @@ self.onmessage = async (e) => {
       // }
 
       // if ((fi + 1) % Math.max(1, Math.round(videoConfig.framerate / 2)) === 0) {
-      console.log(`frame-worker: encoded frame ${frameIndex} (queue=${encoder.encodeQueueSize})`);
+      // console.log(`frame-worker: encoded frame ${frameIndex} (queue=${encoder.encodeQueueSize})`);
       // }
     }
 

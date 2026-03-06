@@ -7,7 +7,7 @@ import { formatTime } from './utils.js';
 // More workers than this causes thermal throttle and cache thrash — the encoder
 // already uses multiple threads internally, so over-subscribing hurts.
 const WORKER_COUNT = Math.max(2, Math.min(Math.floor(navigator.hardwareConcurrency / 2), 4));
-// const WORKER_COUNT = 5
+// const WORKER_COUNT = 6
 // ── Constants ──────────────────────────────────────────────────────────────────
 const W = 1280, H = 720, FPS = 30;
 const FONT_SIZE         = 38,   ADLIB_FONT_SIZE    = 30;
@@ -110,27 +110,20 @@ function fillUpToFrame(frameIndex, color) {
   _progressCtx.fillRect(0, 0, x + 1, _progressCanvasHeight);
 }
 
-function updateProgressByFrame(frameIndex) {
-  const total = _progressTotalFrames || 0;
-  if (!total) return;
-  // Paint the pixel corresponding to this frame (leave previous pixels intact)
-  drawPixelForFrame(frameIndex, COL_ACTIVE);
-}
 
 function setTextFromFrame(frameIndex) {
   const total = _progressTotalFrames || 0;
   if (!total || !_progressCanvasWidth) return;
   // Interpret frameIndex as a count of completed frames (0 => 0%).
   const count = Math.round(frameIndex || 0);
+  const renderSub = document.getElementById('render-sub');
   if (count <= 0) {
-    const renderSub = document.getElementById('render-sub');
-    if (renderSub) renderSub.textContent = '0.0%';
+    renderSub.textContent = '0.0%';
     return;
   }
   const oneBased = Math.min(total, Math.max(1, count));
   const frac = ((oneBased - 1) / Math.max(1, total - 1));
-  const renderSub = document.getElementById('render-sub');
-  if (renderSub) renderSub.textContent = (frac * 100).toFixed(1) + '%';
+  renderSub.textContent = (frac * 100).toFixed(1) + '%';
 }
 
 function buildLineSegments(lineEl, lineSpans) {
@@ -544,39 +537,18 @@ async function startOfflineRender(overlay, barFill, renderSub) {
       if (msg.packet) {
         encodedChunks.push(msg.packet);
         // packet.frameIndex refers to the encoded frame index — paint the pixel only
-        try { drawPixelForFrame(msg.packet.frameIndex); } catch (e) {}
-        return;
-      }
-
-      if (msg.progress !== undefined) {
-        workerProgress[wi] = msg.progress;
-        // normalize this worker's progress to fraction [0..1]
-        let frac = 0;
-        const raw = msg.progress;
-        const count = workerFrameCounts[wi] || frames.length || 1;
-        if (typeof raw === 'number') {
-          if (raw <= 1) frac = Math.max(0, Math.min(1, raw));
-          else frac = Math.max(0, Math.min(1, raw / count));
-        }
-        // compute total done frames by interpreting each workerProgress entry
-        let doneFrames = 0;
-        for (let k = 0; k < workerProgress.length; k++) {
-          const v = workerProgress[k];
-          const cnt = workerFrameCounts[k] || 0;
-          if (v === undefined || cnt === 0) continue;
-          if (v <= 1) doneFrames += v * cnt;
-          else doneFrames += Math.min(v, cnt);
-        }
-        const overallFrames = Math.min(totalFrames, Math.round(doneFrames));
-        // update bar based on absolute frame number (fill up to overallFrames)
-        try { fillUpToFrame(overallFrames); setTextFromFrame(overallFrames); } catch (e) {}
+        try { 
+          drawPixelForFrame(msg.packet.frameIndex, COL_ACTIVE);
+          // Calculate overall percentage based on total frames across all workers
+          const completedFrames = encodedChunks.length;
+          const overallPercent = (completedFrames / totalFrames) * 100;
+          renderSub.textContent = overallPercent.toFixed(1) + '%';
+        } catch (e) {}
         return;
       }
 
       if (msg.done) {
         worker.terminate();
-        console.log(`Worker ${wi} finished`);
-        workerProgress[wi] = frames.length;
         resolve();
         return;
       }
@@ -1167,11 +1139,11 @@ async function startRealtimeRender(overlay, barFill, renderSub) {
     const currentFrame = Math.min(Math.round(t * FPS), totalFramesRT - 1);
     fillUpToFrame(currentFrame);
     setTextFromFrame(currentFrame);
+    console.log(`Rendered frame for t=${t.toFixed(2)}s (frame ${currentFrame})`);
   }
 
-  intervalId = setInterval(doRenderTick, 1000 / FPS);
   function rafLoop() {
-    if (renderCancelled) { clearInterval(intervalId); return; }
+    if (renderCancelled) { return; }
     if (renderACtx.currentTime - audioStartTime <= state.duration + 0.5) {
       doRenderTick();
       requestAnimationFrame(rafLoop);
