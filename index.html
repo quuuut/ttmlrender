@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTML Renderer</title>
+<link rel="stylesheet" href="./fonts/fonts.css">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<header>
+  <h1>TTML Renderer</h1>
+  <span>v1.6 by <a target="spicy" href="https://spicylyrics.org/toxi">@toxi</a> and <a target="spicy" href="https://spicylyrics.org/quuut">@quuut</a></span>
+</header>
+
+<div class="upload-panel">
+  <div class="drop-zone" id="ttml-drop">
+    <input type="file" id="ttml-input" accept=".ttml,.xml">
+    <div class="label">Lyrics file</div>
+    <div class="hint" id="ttml-hint">Drop .ttml here</div>
+    <div class="filename" id="ttml-name" style="display:none"></div>
+  </div>
+  <div class="drop-zone" id="audio-drop">
+    <input type="file" id="audio-input" accept="audio/*">
+    <div class="label">Audio file</div>
+    <div class="hint" id="audio-hint">Drop audio here</div>
+    <div class="filename" id="audio-name" style="display:none"></div>
+  </div>
+</div>
+
+<div class="divider"><div class="divider-line"></div></div>
+
+<div class="player-bar">
+  <div class="player-inner">
+    <div class="controls">
+      <button class="btn-play" id="btn-play" disabled>
+        <svg width="16" height="16" viewBox="0 0 16 16">
+          <polygon id="play-icon" points="4,2 14,8 4,14"/>
+        </svg>
+      </button>
+      <div class="time-display">
+        <span id="current-time">0:00</span> / <span id="total-time">0:00</span>
+      </div>
+      <input type="range" class="seek" id="seek-bar" min="0" max="100" value="0" step="0.01" disabled>
+      <button class="btn-render" id="btn-render" disabled title="Export to video">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M2 2l10 5-10 5V2z" fill="currentColor"/>
+          <rect x="1" y="11.5" width="12" height="1.5" fill="currentColor" rx="0.75"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="lyrics-outer">
+  <div id="lyrics-container">
+    <div class="empty-state">
+      <div class="big">LYRICS</div>
+      <div class="sub">Upload a .ttml file to begin</div>
+    </div>
+  </div>
+</div>
+
+<div id="render-overlay">
+  <div class="render-title">Rendering</div>
+  <div class="render-sub" id="render-sub">Preparing…</div>
+  <div class="render-bar-track" id="render-bar-track"></div>
+  <button class="render-cancel" id="render-cancel">Cancel</button>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

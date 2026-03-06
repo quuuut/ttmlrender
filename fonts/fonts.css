@@ -1,0 +1,27 @@
+@font-face {
+  font-family: 'Lyrics';
+  src: url('./LyricsRegular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Lyrics';
+  src: url('./LyricsMedium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Lyrics';
+  src: url('./LyricsSemibold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Lyrics';
+  src: url('./LyricsBold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+}
