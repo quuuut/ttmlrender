@@ -5,24 +5,24 @@
 // Listens on a BroadcastChannel cancel flag for instant cancellation.
 
 const W = 1280, H = 720;
-const LEFT_PAD   = 80, RIGHT_PAD = 80;
+const LEFT_PAD = 80, RIGHT_PAD = 80;
 const MAX_TEXT_W = W - LEFT_PAD - RIGHT_PAD;
-const BG         = '#0a0a0f';
-const COL_DIM    = '#3a3a55';
-const COL_MID    = '#6a6a9a';
+const BG = '#0a0a0f';
+const COL_DIM = '#3a3a55';
+const COL_MID = '#6a6a9a';
 const COL_BRIGHT = '#c8c8e8';
 const COL_ACTIVE = '#e8f440';
 const COL_BORDER = '#1e1e2e';
 const JITTER_DUR = 0.060;
 const FONT_STACK = '"Lyrics", "DM Mono", monospace';
-const CENTER_Y   = H / 2 - 20;
+const CENTER_Y = H / 2 - 20;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function easeOutExpo(t) { return 1 - Math.pow(1 - t, 3.5); }
 
 function getSpanY(span, t) {
   if (t < span.begin) return 2;
-  if (t >= span.end)  return 0;
+  if (t >= span.end) return 0;
   const elapsed = t - span.begin;
   const wordDur = span.end - span.begin;
   if (elapsed < JITTER_DUR) return 2 + 3 * (elapsed / JITTER_DUR);
@@ -64,38 +64,38 @@ function drawFrame(ctx, layout, creditText, t, viewOffsetY) {
     const entryTop = entry.y - viewOffsetY;
     if (entryTop + entry.totalH < -10 || entryTop > H + 10) continue;
 
-    const l          = entry.lineObj;
-    const isActive   = t >= l.begin && t < l.end;
+    const l = entry.lineObj;
+    const isActive = t >= l.begin && t < l.end;
     const isPastLine = l.end <= t;
-    const isRight    = entry.agent === 'v2';
+    const isRight = entry.agent === 'v2';
 
-    ctx.font         = `${entry.fontSize}px ${FONT_STACK}`;
+    ctx.font = `${entry.fontSize}px ${FONT_STACK}`;
     ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha  = entry.isAdlib ? 0.6 : 1.0;
+    ctx.globalAlpha = entry.isAdlib ? 0.6 : 1.0;
 
     let rowY = entryTop;
     for (const row of entry.rows) {
-      const rowW    = row.reduce((s, seg) => s + seg.width, 0);
-      let xCursor   = isRight ? (W - RIGHT_PAD - rowW) : LEFT_PAD;
+      const rowW = row.reduce((s, seg) => s + seg.width, 0);
+      let xCursor = isRight ? (W - RIGHT_PAD - rowW) : LEFT_PAD;
 
       for (const seg of row) {
         // Monomorphic span check: sentinel begin === -1 means no span
         if (seg.span.begin < 0) {
           ctx.shadowBlur = 0;
-          ctx.fillStyle  = isPastLine ? COL_BRIGHT : (isActive ? COL_MID : COL_DIM);
+          ctx.fillStyle = isPastLine ? COL_BRIGHT : (isActive ? COL_MID : COL_DIM);
           ctx.fillText(seg.text, xCursor, rowY + entry.fontSize + 2);
         } else {
-          const s          = seg.span;
+          const s = seg.span;
           const spanActive = t >= s.begin && t < s.end;
-          const spanPast   = s.end <= t;
-          const ty         = getSpanY(s, t);
-          ctx.fillStyle    = spanActive
+          const spanPast = s.end <= t;
+          const ty = getSpanY(s, t);
+          ctx.fillStyle = spanActive
             ? COL_ACTIVE
             : spanPast
               ? COL_BRIGHT
               : (isPastLine || isActive) ? COL_MID : COL_DIM;
           ctx.shadowColor = COL_ACTIVE;
-          ctx.shadowBlur  = spanActive ? 18 : 0;
+          ctx.shadowBlur = spanActive ? 18 : 0;
           ctx.fillText(seg.text, xCursor, rowY + entry.fontSize + ty);
         }
         xCursor += seg.width;
@@ -104,7 +104,7 @@ function drawFrame(ctx, layout, creditText, t, viewOffsetY) {
     }
 
     ctx.globalAlpha = 1.0;
-    ctx.shadowBlur  = 0;
+    ctx.shadowBlur = 0;
 
     // Gap progress bar
     const nextEntry = layout[entry.i + 1];
@@ -123,8 +123,8 @@ function drawFrame(ctx, layout, creditText, t, viewOffsetY) {
           ctx.fillRect(LEFT_PAD, barY, barW, 2);
         }
         ctx.globalAlpha = 0.4;
-        ctx.font        = `11px ${FONT_STACK}`;
-        ctx.fillStyle   = COL_BRIGHT;
+        ctx.font = `11px ${FONT_STACK}`;
+        ctx.fillStyle = COL_BRIGHT;
         ctx.fillText(Math.round(gap) + 's', LEFT_PAD + barW + 8, barY + 2);
         ctx.globalAlpha = 1.0;
       }
@@ -137,8 +137,8 @@ function drawFrame(ctx, layout, creditText, t, viewOffsetY) {
     const lastDrawY = lastEntry ? (lastEntry.y + lastEntry.totalH - viewOffsetY) : H - 60;
     if (lastDrawY + 60 > 0 && lastDrawY < H) {
       ctx.globalAlpha = 0.4;
-      ctx.font        = `14px ${FONT_STACK}`;
-      ctx.fillStyle   = COL_BRIGHT;
+      ctx.font = `14px ${FONT_STACK}`;
+      ctx.fillStyle = COL_BRIGHT;
       const words = creditText.split(' ');
       let line = '', creditY = lastDrawY + 40;
       for (const word of words) {
@@ -173,39 +173,46 @@ self.onmessage = async (e) => {
     // ── Canvas setup ────────────────────────────────────────────────────────────
     // Single 2D OffscreenCanvas — no WebGL, no composite blit overhead.
     const canvas = new OffscreenCanvas(W, H);
-    const ctx    = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+    const font = new FontFace('Lyrics', 'url(/fonts/LyricsRegular.woff2)');
+    try {
+      await font.load();
+      self.fonts.add(font);
+    } catch (e) {
+      console.warn('frame-worker: font load failed, falling back', e);
+    }
 
     // Warm up font cache so the first real frame doesn't stall
     ctx.font = `38px ${FONT_STACK}`;
     ctx.fillText('', 0, 0);
 
     // ── VideoEncoder setup ────────────────────────────────────────────────────
-    const frameDuration  = Math.round(1_000_000 / videoConfig.framerate);
-    const MAX_QUEUE      = 12;
+    const frameDuration = Math.round(1_000_000 / videoConfig.framerate);
+    const MAX_QUEUE = 12;
     const PROGRESS_EVERY = Math.max(1, Math.round(videoConfig.framerate));
 
     // Stream packets back immediately rather than buffering — cuts peak memory
     // usage by ~50% and lets the main thread start muxing sooner.
-    const encoderOutput = (chunk) => {
+    const encoderOutput = (chunk, metadata) => {
+      console.log('chunk:', chunk.type, 'size:', chunk.byteLength, 'has config:', !!metadata?.decoderConfig);      
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
-      self.postMessage(
-        {
-          packet: {
-            frameIndex: Math.round((chunk.timestamp / 1_000_000) * videoConfig.framerate),
-            type:       chunk.type,
-            timestamp:  chunk.timestamp,
-            duration:   chunk.duration ?? frameDuration,
-            data,
-          },
+      self.postMessage({
+        packet: {
+          frameIndex: Math.round((chunk.timestamp / 1_000_000) * videoConfig.framerate),
+          type:       chunk.type,
+          timestamp:  chunk.timestamp,
+          duration:   chunk.duration ?? frameDuration,
+          data,
+          decoderConfig: metadata?.decoderConfig ?? null,  // ← add this
         },
-        [data.buffer]  // transfer — zero-copy
-      );
+      }, [data.buffer]);
     };
 
     const encoder = new VideoEncoder({
       output: encoderOutput,
-      error:  (err) => self.postMessage({ error: String(err) }),
+      error: (err) => self.postMessage({ error: String(err) }),
     });
 
     encoder.configure(videoConfig);
@@ -242,11 +249,24 @@ self.onmessage = async (e) => {
 
       drawFrame(ctx, layout, creditText, t, viewOffsetY);
 
+// DEBUG
+if (fi < 5) {
+  const imageData = ctx.getImageData(0, 0, W, H);
+  const data = imageData.data;
+  let r = 0, g = 0, b = 0;
+  const step = 100; // sample every 100th pixel for speed
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4 * step) {
+    r += data[i]; g += data[i+1]; b += data[i+2];
+    count++;
+  }
+  console.log(`fi=${fi} t=${t.toFixed(2)} avg RGB: ${(r/count)|0} ${(g/count)|0} ${(b/count)|0}`);
+}
       const vf = new VideoFrame(canvas, { timestamp, duration: frameDuration });
       // Keyframe every 5s — VP9/AVC keyframes are expensive; 5s is plenty for
       // a static lyrics video and halves the number of costly intra-frame encodes
       // vs. the previous 2s interval.
-      encoder.encode(vf, { keyFrame: frameIndex % (videoConfig.framerate * 5) === 0 });
+        encoder.encode(vf, { keyFrame: frameIndex % (videoConfig.framerate * 5) === 0 || fi === 0 });
       vf.close();
 
       // if ((fi + 1) % PROGRESS_EVERY === 0 || fi === frames.length - 1) {

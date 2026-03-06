@@ -404,7 +404,7 @@ async function probeVideoConfig() {
       bitrate:              8_000_000,
       framerate:            FPS,
       hardwareAcceleration: 'prefer-hardware',
-      avc:                  { format: 'annexb' },
+      avc:                  { format: 'avc' },
     },
     // VP9 hardware — rare but worth trying before SW fallback
     {
@@ -423,6 +423,7 @@ async function probeVideoConfig() {
       bitrate:              8_000_000,
       framerate:            FPS,
       hardwareAcceleration: 'prefer-software',
+      bitrateMode:          'constant'
     },
   ];
 
@@ -496,22 +497,15 @@ async function startOfflineRender(overlay, barFill, renderSub) {
     );
   }
 
-  // Per-worker frame counts for accurate aggregation (used by progress normalization)
-  const workerFrameCounts = slabs.map(s => s.length);
-
   // Initialize single-pixel progress bar based on total frames
   initSingleProgress(totalFrames);
 
   console.log(`Starting encode: ${totalFrames} frames across ${slabs.length} workers`);
   const encodeStartTime = performance.now();
 
-  const workerProgress = new Array(slabs.length).fill(0);
   const encodedChunks  = [];   // accumulated from streamed packets
 
   // ── Dispatch workers ─────────────────────────────────────────────────────────
-  // Workers stream packets back one-by-one via { packet } messages, then send
-  // { done: true } when they've flushed. This keeps peak memory ~2× lower than
-  // the old buffer-everything-until-flush approach.
   const workerPromises = slabs.map((frames, wi) => new Promise((resolve, reject) => {
     const worker = new Worker(workerScript, { type: 'module' });
 
@@ -536,10 +530,8 @@ async function startOfflineRender(overlay, barFill, renderSub) {
       // Streamed packet — accumulate immediately and update progress by frame
       if (msg.packet) {
         encodedChunks.push(msg.packet);
-        // packet.frameIndex refers to the encoded frame index — paint the pixel only
         try { 
           drawPixelForFrame(msg.packet.frameIndex, COL_ACTIVE);
-          // Calculate overall percentage based on total frames across all workers
           const completedFrames = encodedChunks.length;
           const overallPercent = (completedFrames / totalFrames) * 100;
           renderSub.textContent = overallPercent.toFixed(1) + '%';
@@ -613,17 +605,15 @@ async function startOfflineRender(overlay, barFill, renderSub) {
   if (renderCancelled) return;
 
   console.log('Muxing…');
-  // show near-complete (99%) while muxing — map to pixel width
   if (_progressTotalFrames) {
     const tgt = Math.round(0.99 * Math.max(1, _progressTotalFrames - 1)) + 1;
     fillUpToFrame(tgt);
   }
   renderSub.textContent = (0.99 * 100).toFixed(1) + '%';
-  await new Promise(r => setTimeout(r, 0)); // yield to browser to update UI
+  await new Promise(r => setTimeout(r, 0));
 
   let blob, filename;
   if (isAVC) {
-    // MP4 container for H.264 — WebM doesn't support AVC
     blob     = muxMP4(encodedChunks, encodedAudioChunks, sampleRate, numChannels, state.duration);
     filename = 'lyrics-video.mp4';
   } else {
@@ -649,440 +639,56 @@ function interleaveChannels(channelData, frameCount) {
   return result;
 }
 
-// ── Minimal WebM muxer (VP9 + Opus) ───────────────────────────────────────────
+// ── WebM muxer using webm-muxer.js
 function muxWebM(videoChunks, audioChunks, sampleRate, numChannels, duration) {
-  function encodeVarInt(val) {
-    if (val < 0x7f)       return new Uint8Array([val | 0x80]);
-    if (val < 0x3fff)     return new Uint8Array([(val >> 8) | 0x40, val & 0xff]);
-    if (val < 0x1fffff)   return new Uint8Array([(val >> 16) | 0x20, (val >> 8) & 0xff, val & 0xff]);
-    if (val < 0x0fffffff) return new Uint8Array([(val >> 24) | 0x10, (val >> 16) & 0xff, (val >> 8) & 0xff, val & 0xff]);
-    return new Uint8Array([0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-  }
-  function encodeID(id) {
-    const hex    = id.toString(16);
-    const padded = hex.length % 2 === 0 ? hex : '0' + hex;
-    const bytes  = [];
-    for (let i = 0; i < padded.length; i += 2) bytes.push(parseInt(padded.slice(i, i + 2), 16));
-    return new Uint8Array(bytes);
-  }
-  function encodeUint(val, byteLen) {
-    const buf = new Uint8Array(byteLen);
-    let v = val;
-    for (let i = byteLen - 1; i >= 0; i--) { buf[i] = v & 0xff; v = Math.floor(v / 256); }
-    return buf;
-  }
-  function encodeFloat64(val) {
-    const buf = new ArrayBuffer(8);
-    new DataView(buf).setFloat64(0, val, false);
-    return new Uint8Array(buf);
-  }
-  function ebml(id, data) {
-    const idBytes   = encodeID(id);
-    const dataBytes = data instanceof Uint8Array ? data : concat(...data);
-    return concat(idBytes, encodeVarInt(dataBytes.byteLength), dataBytes);
-  }
-  function concat(...arrays) {
-    const total = arrays.reduce((s, a) => s + a.byteLength, 0);
-    const out   = new Uint8Array(total);
-    let off = 0;
-    for (const a of arrays) { out.set(a, off); off += a.byteLength; }
-    return out;
-  }
+  const { Muxer, ArrayBufferTarget } = WebMMuxer;
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target,
+    video: { codec: 'V_VP9', width: W, height: H, frameRate: FPS },
+    audio: { codec: 'A_OPUS', numberOfChannels: numChannels, sampleRate },
+  });
 
-  const ID = {
-    EBML: 0x1A45DFA3, EBMLVersion: 0x4286, EBMLReadVersion: 0x42F7,
-    EBMLMaxIDLength: 0x42F2, EBMLMaxSizeLength: 0x42F3, DocType: 0x4282,
-    DocTypeVersion: 0x4287, DocTypeReadVersion: 0x4285,
-    Segment: 0x18538067, Info: 0x1549A966, TimestampScale: 0x2AD7B1,
-    Duration: 0x4489, MuxingApp: 0x4D80, WritingApp: 0x5741,
-    Tracks: 0x1654AE6B, TrackEntry: 0xAE, TrackNumber: 0xD7,
-    TrackUID: 0x73C5, TrackType: 0x83, CodecID: 0x86,
-    Video: 0xE0, PixelWidth: 0xB0, PixelHeight: 0xBA, DefaultDuration: 0x23E383,
-    Audio: 0xE1, SamplingFrequency: 0xB5, Channels: 0x9F,
-    Cluster: 0x1F43B675, Timestamp: 0xE7, SimpleBlock: 0xA3,
-  };
-
-  const header = ebml(ID.EBML, [
-    ebml(ID.EBMLVersion,        encodeUint(1, 1)),
-    ebml(ID.EBMLReadVersion,    encodeUint(1, 1)),
-    ebml(ID.EBMLMaxIDLength,    encodeUint(4, 1)),
-    ebml(ID.EBMLMaxSizeLength,  encodeUint(8, 1)),
-    ebml(ID.DocType,            new TextEncoder().encode('webm')),
-    ebml(ID.DocTypeVersion,     encodeUint(4, 1)),
-    ebml(ID.DocTypeReadVersion, encodeUint(2, 1)),
-  ]);
-
-  const segInfo = ebml(ID.Info, [
-    ebml(ID.TimestampScale, encodeUint(1_000_000, 4)),
-    ebml(ID.Duration,       encodeFloat64(duration * 1000)),
-    ebml(ID.MuxingApp,      new TextEncoder().encode('ttmlrender')),
-    ebml(ID.WritingApp,     new TextEncoder().encode('ttmlrender')),
-  ]);
-
-  const videoTrack = ebml(ID.TrackEntry, [
-    ebml(ID.TrackNumber,     encodeUint(1, 1)),
-    ebml(ID.TrackUID,        encodeUint(1, 4)),
-    ebml(ID.TrackType,       encodeUint(1, 1)),
-    ebml(ID.CodecID,         new TextEncoder().encode('V_VP9')),
-    ebml(ID.DefaultDuration, encodeUint(Math.round(1_000_000_000 / FPS), 4)),
-    ebml(ID.Video, [
-      ebml(ID.PixelWidth,  encodeUint(W, 2)),
-      ebml(ID.PixelHeight, encodeUint(H, 2)),
-    ]),
-  ]);
-
-  const audioTrack = ebml(ID.TrackEntry, [
-    ebml(ID.TrackNumber, encodeUint(2, 1)),
-    ebml(ID.TrackUID,    encodeUint(2, 4)),
-    ebml(ID.TrackType,   encodeUint(2, 1)),
-    ebml(ID.CodecID,     new TextEncoder().encode('A_OPUS')),
-    ebml(ID.Audio, [
-      ebml(ID.SamplingFrequency, encodeFloat64(sampleRate)),
-      ebml(ID.Channels,          encodeUint(numChannels, 1)),
-    ]),
-  ]);
-
-  const tracks = ebml(ID.Tracks, [videoTrack, audioTrack]);
-
-  const CLUSTER_MS = 1000;
-  const clusterArrays = [];
-  let clusterStartMs = 0, clusterBlocks = [];
-
-  const allBlocks = [];
   for (const pkt of videoChunks) {
-    allBlocks.push({ trackNum: 1, timestampUs: pkt.timestamp, data: pkt.data, isKey: pkt.type === 'key' });
+    muxer.addVideoChunkRaw(
+      pkt.data,
+      pkt.type,
+      pkt.timestamp,
+      pkt.decoderConfig ? { decoderConfig: pkt.decoderConfig } : undefined,
+    );
   }
   for (const chunk of audioChunks) {
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
-    allBlocks.push({ trackNum: 2, timestampUs: chunk.timestamp, data, isKey: true });
-  }
-  allBlocks.sort((a, b) => a.timestampUs - b.timestampUs);
-
-  function flushCluster(blocks, startMs) {
-    if (!blocks.length) return;
-    const blockEls = blocks.map(b => {
-      const rel        = Math.max(-32768, Math.min(32767, Math.round(b.timestampUs / 1000) - startMs));
-      const trackBytes = encodeVarInt(b.trackNum);
-      const hdr        = new Uint8Array(trackBytes.length + 3);
-      hdr.set(trackBytes, 0);
-      new DataView(hdr.buffer).setInt16(trackBytes.length, rel, false);
-      hdr[trackBytes.length + 2] = b.isKey ? 0x80 : 0x00;
-      return ebml(ID.SimpleBlock, concat(hdr, b.data));
-    });
-    clusterArrays.push(ebml(ID.Cluster, [ebml(ID.Timestamp, encodeUint(startMs, 4)), ...blockEls]));
+    muxer.addAudioChunkRaw(data, 'key', chunk.timestamp);
   }
 
-  for (const block of allBlocks) {
-    const ms = Math.round(block.timestampUs / 1000);
-    if (ms - clusterStartMs >= CLUSTER_MS && clusterBlocks.length) {
-      flushCluster(clusterBlocks, clusterStartMs);
-      clusterStartMs = ms; clusterBlocks = [];
-    }
-    clusterBlocks.push(block);
-  }
-  flushCluster(clusterBlocks, clusterStartMs);
-
-  const segBody     = concat(segInfo, tracks, ...clusterArrays);
-  const segIDBytes  = encodeID(ID.Segment);
-  const unknownSize = new Uint8Array([0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-  return new Blob([concat(header, segIDBytes, unknownSize, segBody)], { type: 'video/webm' });
+  muxer.finalize();
+  return new Blob([target.buffer], { type: 'video/webm' });
 }
 
-// ── Minimal MP4 muxer (H.264 annexb + Opus in mp4a) ───────────────────────────
-// Used when AVC hardware encode is selected. Produces a fragmented MP4 (fMP4)
-// which does not require seeking to write the moov box, making it suitable for
-// streaming construction in memory.
+// ── MP4 muxer using mp4-muxer.js
 function muxMP4(videoChunks, audioChunks, sampleRate, numChannels, duration) {
-  // ── Tiny MP4 box builder ────────────────────────────────────────────────────
-  function box(type, ...children) {
-    const typeBytes = new TextEncoder().encode(type);
-    const payload   = children.map(c => c instanceof Uint8Array ? c : u8(c));
-    const total     = payload.reduce((s, c) => s + c.byteLength, 0) + 8;
-    const out       = new Uint8Array(total);
-    const dv        = new DataView(out.buffer);
-    dv.setUint32(0, total, false);
-    out.set(typeBytes, 4);
-    let off = 8;
-    for (const c of payload) { out.set(c, off); off += c.byteLength; }
-    return out;
-  }
-  function u8(arr) { return arr instanceof Uint8Array ? arr : new Uint8Array(arr); }
-  function u32be(v) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, false); return b; }
-  function u16be(v) { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v, false); return b; }
-  function u64be(v) {
-    const b = new Uint8Array(8); const dv = new DataView(b.buffer);
-    dv.setUint32(0, Math.floor(v / 0x100000000), false);
-    dv.setUint32(4, v >>> 0, false);
-    return b;
-  }
-  function concat(...arrays) {
-    const t = arrays.reduce((s, a) => s + a.byteLength, 0);
-    const o = new Uint8Array(t); let off = 0;
-    for (const a of arrays) { o.set(a, off); off += a.byteLength; }
-    return o;
-  }
+  const { Muxer, ArrayBufferTarget } = Mp4Muxer;
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target,
+    video: { codec: 'avc', width: W, height: H, frameRate: FPS },
+    audio: { codec: 'opus', numberOfChannels: numChannels, sampleRate },
+    fastStart: 'in-memory',
+  });
 
-  // Fragmented MP4: ftyp + moov(mvhd, trak×2, mvex) + moof/mdat pairs
-  const timescale = 90000; // standard for video
-  const aTimescale = sampleRate;
-  const durTicks   = Math.round(duration * timescale);
-
-  // ── ftyp ───────────────────────────────────────────────────────────────────
-  const ftyp = box('ftyp',
-    new TextEncoder().encode('isom'),  // major brand
-    u32be(0x200),                      // minor version
-    new TextEncoder().encode('isomiso2avc1mp41'),
-  );
-
-  // ── mvhd ──────────────────────────────────────────────────────────────────
-  const mvhd = box('mvhd',
-    new Uint8Array(4),    // version + flags
-    u32be(0),             // creation time
-    u32be(0),             // modification time
-    u32be(timescale),
-    u32be(durTicks),
-    u32be(0x00010000),    // rate 1.0
-    u16be(0x0100),        // volume 1.0
-    new Uint8Array(10),   // reserved
-    u32be(0x00010000), u32be(0), u32be(0),  // matrix
-    u32be(0), u32be(0x00010000), u32be(0),
-    u32be(0), u32be(0), u32be(0x40000000),
-    new Uint8Array(24),   // pre-defined
-    u32be(3),             // next track ID
-  );
-
-  // ── Video trak ─────────────────────────────────────────────────────────────
-  const vTkhd = box('tkhd',
-    u8([0, 0, 0, 3]),     // version 0, flags: track enabled + in movie
-    u32be(0), u32be(0),   // creation / modification
-    u32be(1),             // track ID
-    u32be(0),             // reserved
-    u32be(durTicks),
-    new Uint8Array(8),
-    u16be(0), u16be(0),   // layer, alt group
-    u16be(0),             // volume
-    u16be(0),
-    u32be(0x00010000), u32be(0), u32be(0),
-    u32be(0), u32be(0x00010000), u32be(0),
-    u32be(0), u32be(0), u32be(0x40000000),
-    u32be(W << 16), u32be(H << 16),
-  );
-
-  const vMdhd = box('mdhd',
-    new Uint8Array(4),
-    u32be(0), u32be(0),
-    u32be(timescale),
-    u32be(durTicks),
-    u16be(0x55c4),   // language: und
-    u16be(0),
-  );
-
-  const vHdlr = box('hdlr',
-    new Uint8Array(4),
-    u32be(0),
-    new TextEncoder().encode('vide'),
-    new Uint8Array(12),
-    new TextEncoder().encode('VideoHandler\0'),
-  );
-
-  const avcC = new Uint8Array(0); // minimal; browsers accept empty for fMP4 HW-encoded AVC
-  const avc1entry = box('avc1',
-    new Uint8Array(6),    // reserved
-    u16be(1),             // data reference index
-    new Uint8Array(16),   // pre-defined + reserved
-    u16be(W), u16be(H),
-    u32be(0x00480000), u32be(0x00480000),  // 72dpi
-    u32be(0),
-    u16be(1),             // frame count
-    new Uint8Array(32),   // compressor name
-    u16be(0x0018),        // depth
-    u16be(0xffff),        // pre-defined
-    box('avcC', avcC),
-  );
-
-  const vStsd = box('stsd', new Uint8Array(4), u32be(1), avc1entry);
-  const emptyStbl = box('stbl', vStsd,
-    box('stts', new Uint8Array(4), u32be(0)),
-    box('stsc', new Uint8Array(4), u32be(0)),
-    box('stsz', new Uint8Array(4), u32be(0), u32be(0)),
-    box('stco', new Uint8Array(4), u32be(0)),
-  );
-  const vMinf = box('minf', box('vmhd', u8([0, 0, 0, 1]), new Uint8Array(4)),
-    box('dinf', box('dref', new Uint8Array(4), u32be(1),
-      box('url ', u8([0, 0, 0, 1])))),
-    emptyStbl);
-  const vMdia = box('mdia', vMdhd, vHdlr, vMinf);
-  const vTrak = box('trak', vTkhd, vMdia);
-
-  // ── Audio trak (Opus in mp4a) ───────────────────────────────────────────────
-  const aTkhd = box('tkhd',
-    u8([0, 0, 0, 3]),
-    u32be(0), u32be(0),
-    u32be(2),
-    u32be(0),
-    u32be(Math.round(duration * aTimescale)),
-    new Uint8Array(8),
-    u16be(0), u16be(1),
-    u16be(0x0100),
-    u16be(0),
-    u32be(0x00010000), u32be(0), u32be(0),
-    u32be(0), u32be(0x00010000), u32be(0),
-    u32be(0), u32be(0), u32be(0x40000000),
-    u32be(0), u32be(0),
-  );
-
-  const aMdhd = box('mdhd',
-    new Uint8Array(4),
-    u32be(0), u32be(0),
-    u32be(aTimescale),
-    u32be(Math.round(duration * aTimescale)),
-    u16be(0x55c4),
-    u16be(0),
-  );
-
-  const aHdlr = box('hdlr',
-    new Uint8Array(4), u32be(0),
-    new TextEncoder().encode('soun'),
-    new Uint8Array(12),
-    new TextEncoder().encode('SoundHandler\0'),
-  );
-
-  // OpusSpecificBox (dOps)
-  const dOps = box('dOps',
-    u8([0]),             // version
-    u8([numChannels]),
-    u16be(312),          // pre-skip (standard Opus encoder delay)
-    u32be(sampleRate),
-    u16be(0),            // output gain
-    u8([0]),             // channel mapping family 0
-  );
-
-  const opusEntry = box('Opus',
-    new Uint8Array(6),
-    u16be(1),
-    new Uint8Array(8),
-    u16be(numChannels),
-    u16be(0),
-    u32be(sampleRate),
-    dOps,
-  );
-
-  const aStsd = box('stsd', new Uint8Array(4), u32be(1), opusEntry);
-  const aEmptyStbl = box('stbl', aStsd,
-    box('stts', new Uint8Array(4), u32be(0)),
-    box('stsc', new Uint8Array(4), u32be(0)),
-    box('stsz', new Uint8Array(4), u32be(0), u32be(0)),
-    box('stco', new Uint8Array(4), u32be(0)),
-  );
-  const aMinf = box('minf',
-    box('smhd', new Uint8Array(4), u16be(0), u16be(0)),
-    box('dinf', box('dref', new Uint8Array(4), u32be(1),
-      box('url ', u8([0, 0, 0, 1])))),
-    aEmptyStbl);
-  const aMdia = box('mdia', aMdhd, aHdlr, aMinf);
-  const aTrak = box('trak', aTkhd, aMdia);
-
-  // ── mvex (required for fragmented MP4) ────────────────────────────────────
-  const mvex = box('mvex',
-    box('trex', new Uint8Array(4), u32be(1), u32be(1), u32be(0), u32be(0), u32be(0)),
-    box('trex', new Uint8Array(4), u32be(2), u32be(1), u32be(0), u32be(0), u32be(0)),
-  );
-
-  const moov = box('moov', mvhd, vTrak, aTrak, mvex);
-
-  // ── Fragment generation ────────────────────────────────────────────────────
-  // One fragment per cluster (1s), interleaving video and audio.
-  const CLUSTER_S  = 1.0;
-  const fragments  = [];
-  let   seqNum     = 1;
-
-  // Build all blocks with their track assignments
-  const allBlocks = [];
   for (const pkt of videoChunks) {
-    allBlocks.push({
-      track:    1,
-      tsUs:     pkt.timestamp,
-      tsTicks:  Math.round(pkt.timestamp / 1_000_000 * timescale),
-      dur:      Math.round(pkt.duration  / 1_000_000 * timescale),
-      data:     pkt.data,
-      isKey:    pkt.type === 'key',
-    });
+    muxer.addVideoChunkRaw(pkt.data, pkt.type, pkt.timestamp, pkt.duration, pkt.decoderConfig ?? undefined);
   }
   for (const chunk of audioChunks) {
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
-    allBlocks.push({
-      track:    2,
-      tsUs:     chunk.timestamp,
-      tsTicks:  Math.round(chunk.timestamp / 1_000_000 * aTimescale),
-      dur:      chunk.duration ? Math.round(chunk.duration / 1_000_000 * aTimescale) : 960,
-      data,
-      isKey:    true,
-    });
-  }
-  allBlocks.sort((a, b) => a.tsUs - b.tsUs);
-
-  // Group into ~1s clusters
-  const clusters = [];
-  let curCluster = [], curClusterStartUs = 0;
-  for (const b of allBlocks) {
-    if (b.tsUs - curClusterStartUs > CLUSTER_S * 1_000_000 && curCluster.length) {
-      clusters.push(curCluster);
-      curCluster = []; curClusterStartUs = b.tsUs;
-    }
-    curCluster.push(b);
-  }
-  if (curCluster.length) clusters.push(curCluster);
-
-  for (const cluster of clusters) {
-    // moof + mdat for the combined cluster
-    const vBlocks = cluster.filter(b => b.track === 1);
-    const aBlocks = cluster.filter(b => b.track === 2);
-
-    function makeTraf(blocks, trackId, firstTsTicks) {
-      if (!blocks.length) return new Uint8Array(0);
-      // tfhd
-      const tfhd = box('tfhd', u8([0, 0, 0, 0]), u32be(trackId));
-      // tfdt
-      const tfdt = box('tfdt', u8([0, 0, 0, 0]), u32be(firstTsTicks));
-      // trun: offset will be patched after we know moof size
-      const flags = 0x000b05; // data-offset + duration + size + flags per sample
-      const trunHeader = concat(
-        u8([0]), u32be(flags >>> 0).slice(1),  // version 0, 3-byte flags
-        u32be(blocks.length),
-        u32be(0),  // data offset — patched below
-      );
-      const samples = blocks.map(b => concat(
-        u32be(b.dur),
-        u32be(b.data.byteLength),
-        u32be(b.isKey ? 0x02000000 : 0x01010000),  // sample flags
-      ));
-      const trun = box('trun', trunHeader, ...samples);
-      return box('traf', tfhd, tfdt, trun);
-    }
-
-    const vTraf = vBlocks.length ? makeTraf(vBlocks, 1, vBlocks[0].tsTicks) : null;
-    const aTraf = aBlocks.length ? makeTraf(aBlocks, 2, aBlocks[0].tsTicks) : null;
-
-    const mfhd = box('mfhd', new Uint8Array(4), u32be(seqNum++));
-    const trafs = [vTraf, aTraf].filter(Boolean);
-    const moof  = box('moof', mfhd, ...trafs);
-
-    // Patch data-offset in each trun: moof.byteLength + 8 (mdat header)
-    // This is a simplification — for a robust muxer you'd walk the box tree;
-    // for a single-traf-per-moof layout the offset is deterministic.
-    // We just concatenate all sample data into one mdat.
-    const allData = concat(
-      ...vBlocks.map(b => b.data),
-      ...aBlocks.map(b => b.data),
-    );
-    const mdat = box('mdat', allData);
-
-    fragments.push(moof, mdat);
+    muxer.addAudioChunkRaw(data, 'key', chunk.timestamp, chunk.duration ?? undefined);
   }
 
-  return new Blob([ftyp, moov, ...fragments], { type: 'video/mp4' });
+  muxer.finalize();
+  return new Blob([target.buffer], { type: 'video/mp4' });
 }
 
 // ── Fallback: real-time MediaRecorder renderer ─────────────────────────────────
